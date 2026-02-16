@@ -16,11 +16,15 @@ database = None
 
 
 async def connect_to_mongodb():
-    """Connect to MongoDB"""
     global client, database
     client = AsyncIOMotorClient(MONGODB_URL)
     database = client[DATABASE_NAME]
     print(f"✅ Connected to MongoDB: {DATABASE_NAME}")
+    await database.spaces.create_index("space_id", unique=True)
+    await database.spaces.create_index(
+        [("created_at", 1)],
+        expireAfterSeconds=SPACE_EXPIRY_HOURS * 3600
+    )
 
 
 async def close_mongodb_connection():

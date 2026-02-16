@@ -4,9 +4,11 @@ from contextlib import asynccontextmanager
 import asyncio
 import uuid
 import os
+import time
 from datetime import datetime
 from typing import Dict, Set
 import json
+from starlette.middleware.gzip import GZipMiddleware
 
 from database import (
     connect_to_mongodb,
@@ -29,10 +31,9 @@ CLEANUP_INTERVAL_HOURS = int(os.getenv("CLEANUP_INTERVAL_HOURS", "1"))
 # WebSocket connection manager
 class ConnectionManager:
     def __init__(self):
-        # space_id -> set of websocket connections
         self.active_connections: Dict[str, Set[WebSocket]] = {}
-        # websocket -> user_id mapping
         self.user_ids: Dict[WebSocket, str] = {}
+        self.last_db_write: Dict[str, float] = {}
 
     async def connect(self, websocket: WebSocket, space_id: str, user_id: str):
         await websocket.accept()
@@ -123,6 +124,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # REST API Endpoints
@@ -249,11 +251,13 @@ async def websocket_endpoint(websocket: WebSocket, space_id: str):
             message_type = message.get("type")
             
             if message_type == "code_change":
-                # Update code in database
                 new_code = message.get("code", "")
-                await update_space_code(space_id, new_code)
+                now = time.time()
+                last = manager.last_db_write.get(space_id, 0)
+                if now - last >= 0.5:
+                    await update_space_code(space_id, new_code)
+                    manager.last_db_write[space_id] = now
                 
-                # Broadcast to other users
                 await manager.broadcast(
                     space_id,
                     {
@@ -265,11 +269,9 @@ async def websocket_endpoint(websocket: WebSocket, space_id: str):
                 )
             
             elif message_type == "language_change":
-                # Update language in database
                 new_language = message.get("language", "python")
                 await update_space_language(space_id, new_language)
                 
-                # Broadcast to other users
                 await manager.broadcast(
                     space_id,
                     {
@@ -281,7 +283,6 @@ async def websocket_endpoint(websocket: WebSocket, space_id: str):
                 )
             
             elif message_type == "cursor_move":
-                # Broadcast cursor position to other users
                 await manager.broadcast(
                     space_id,
                     {
